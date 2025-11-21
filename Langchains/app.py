@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 from teaching_agent import TeachingAgent
 from exam_question_generator import ExamQuestionGenerator, SUBJECT, CLASS_LEVEL, CHAPTER
 from answer_evaluator import AnswerEvaluator
+from revision_pointers_generator import RevisionPointersGenerator
 
 # Load environment variables
 load_dotenv()
@@ -339,6 +340,72 @@ async def evaluate_answer(request: Request):
         }
     except Exception as e:
         print(f"Error evaluating answer: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+
+@app.get("/api/revision-pointers")
+async def get_revision_pointers():
+    """
+    Generate last-minute revision pointers from the entire chapter (GET endpoint).
+    
+    Returns:
+        JSON response with a list of revision pointers
+    """
+    try:
+        # Initialize generator
+        generator = RevisionPointersGenerator()
+        
+        # Generate revision pointers
+        result = generator.generate_revision_pointers()
+        
+        return {
+            "success": True,
+            "subject": result["subject"],
+            "class_level": result["class_level"],
+            "chapter": result["chapter"],
+            "pointers": result["pointers"],
+            "total_pointers": result["total_pointers"],
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        print(f"Error generating revision pointers: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+
+@app.post("/api/revision-pointers")
+async def generate_revision_pointers():
+    """
+    Generate last-minute revision pointers from the entire chapter (POST endpoint).
+    
+    Returns:
+        JSON response with a list of revision pointers
+    """
+    try:
+        # Initialize generator
+        generator = RevisionPointersGenerator()
+        
+        # Generate revision pointers
+        result = generator.generate_revision_pointers()
+        
+        return {
+            "success": True,
+            "subject": result["subject"],
+            "class_level": result["class_level"],
+            "chapter": result["chapter"],
+            "pointers": result["pointers"],
+            "total_pointers": result["total_pointers"],
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        print(f"Error generating revision pointers: {str(e)}")
         return {
             "success": False,
             "error": str(e),
