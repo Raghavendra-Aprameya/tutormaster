@@ -543,6 +543,20 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     })
                     continue
                 
+                # Check if audio was interrupted (user sent new message while audio was playing)
+                audio_interrupted = message_data.get("audio_interrupted", False)
+                
+                # If in teaching mode and audio was interrupted, pause teaching
+                if audio_interrupted and agent.current_mode == "teaching":
+                    agent.teaching_context["paused"] = True
+                    # Save the last teaching point if available
+                    if len(agent.chat_history) >= 2:
+                        for msg in reversed(agent.chat_history[:-1]):
+                            if msg["role"] == "assistant":
+                                agent.teaching_context["last_teaching_point"] = msg["content"]
+                                break
+                    print(f"Teaching paused due to audio interruption for {client_id}")
+                
                 # Process message through teaching agent
                 print(f"Processing message from {client_id}: {user_message[:50]}...")
                 response = agent.process_message(user_message)

@@ -367,6 +367,7 @@
         let audioQueue = [];
         let isPlayingAudio = false;
         let currentAudio = null;
+        let wasAudioPlaying = false; // Track if audio was playing when new message sent
 
         // DOM Elements
         const chatContainer = document.getElementById('chat-container');
@@ -436,6 +437,8 @@
             if (data.type === 'response') {
                 hideTypingIndicator();
                 addMessage('agent', data.response, data.mode);
+                // Reset audio interruption flag when new response arrives
+                wasAudioPlaying = false;
             } else if (data.type === 'audio') {
                 handleAudio(data);
             } else if (data.type === 'audio_error') {
@@ -515,6 +518,37 @@
             });
         }
 
+        // Cancel all audio playback
+        function cancelAllAudio() {
+            wasAudioPlaying = isPlayingAudio || audioQueue.length > 0 || currentAudio !== null;
+            
+            // Stop current audio if playing
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio.currentTime = 0;
+                if (currentAudio.src) {
+                    URL.revokeObjectURL(currentAudio.src);
+                }
+                currentAudio = null;
+            }
+            
+            // Clear audio queue and revoke URLs
+            audioQueue.forEach(function(audio) {
+                audio.pause();
+                if (audio.src) {
+                    URL.revokeObjectURL(audio.src);
+                }
+            });
+            audioQueue = [];
+            
+            // Reset state
+            isPlayingAudio = false;
+            updateAudioStatus('');
+            
+            console.log('All audio cancelled. Was playing:', wasAudioPlaying);
+            return wasAudioPlaying;
+        }
+
         // Update audio status display
         function updateAudioStatus(text) {
             if (text) {
@@ -579,13 +613,17 @@
                 return;
             }
 
+            // Cancel any playing audio before sending new message
+            const audioWasPlaying = cancelAllAudio();
+
             // Add user message to chat
             addMessage('user', message);
 
-            // Send to server
+            // Send to server with flag indicating if audio was interrupted
             ws.send(JSON.stringify({
                 type: 'message',
-                content: message
+                content: message,
+                audio_interrupted: audioWasPlaying
             }));
 
             // Clear input and show typing indicator
