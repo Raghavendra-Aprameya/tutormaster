@@ -19,6 +19,7 @@ import aiohttp
 from dotenv import load_dotenv
 
 from teaching_agent import TeachingAgent
+from exam_question_generator import ExamQuestionGenerator, SUBJECT, CLASS_LEVEL, CHAPTER
 
 # Load environment variables
 load_dotenv()
@@ -210,6 +211,72 @@ async def health_check():
         "active_connections": len(manager.active_connections),
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+@app.get("/api/exam-questions")
+async def get_exam_questions():
+    """
+    Generate 10 exam-style questions and answers from the document.
+    
+    Returns:
+        JSON response with 10 exam questions and answers
+    """
+    try:
+        # Initialize generator
+        generator = ExamQuestionGenerator()
+        
+        # Generate exactly 10 questions
+        result = generator.generate_exam_questions(num_questions=10)
+        
+        return {
+            "success": True,
+            "subject": SUBJECT,
+            "class_level": CLASS_LEVEL,
+            "chapter": CHAPTER,
+            "total_questions": len(result),
+            "questions": result,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        print(f"Error generating exam questions: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+
+@app.post("/api/exam-questions")
+async def generate_exam_questions():
+    """
+    Generate 10 exam-style questions and answers from the document (POST endpoint).
+    
+    Returns:
+        JSON response with 10 exam questions and answers
+    """
+    try:
+        # Initialize generator
+        generator = ExamQuestionGenerator()
+        
+        # Generate exactly 10 questions
+        result = generator.generate_exam_questions(num_questions=10)
+        
+        return {
+            "success": True,
+            "subject": SUBJECT,
+            "class_level": CLASS_LEVEL,
+            "chapter": CHAPTER,
+            "total_questions": len(result),
+            "questions": result,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        print(f"Error generating exam questions: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
 
 
 @app.get("/demo", response_class=HTMLResponse)

@@ -342,6 +342,7 @@
                 <button class="example-button" onclick="sendExample('Teach me about ancient India')">Learn about Ancient India</button>
                 <button class="example-button" onclick="sendExample('What year was the Battle of Plassey?')">Battle of Plassey</button>
                 <button class="example-button" onclick="sendExample('Tell me about the Mughal Empire')">Mughal Empire</button>
+                <button class="example-button" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-weight: bold;" onclick="fetchExamQuestions()">📝 Generate Exam Questions</button>
             </div>
         </div>
 
@@ -662,6 +663,43 @@
             connect();
             messageInput.focus();
         });
+
+        // Fetch exam questions
+        async function fetchExamQuestions() {
+            try {
+                addSystemMessage('Generating exam questions...');
+                updateAudioStatus('⏳ Generating questions...');
+                
+                const response = await fetch('http://localhost:8000/api/exam-questions');
+                const data = await response.json();
+                
+                if (data.success && data.questions) {
+                    updateAudioStatus('');
+                    
+                    // Display questions in a formatted way
+                    let questionsText = `📝 EXAM QUESTIONS (${data.total_questions} questions)\n\n`;
+                    questionsText += `Subject: ${data.subject} | Class: ${data.class_level} | Chapter: ${data.chapter}\n\n`;
+                    
+                    data.questions.forEach((q, index) => {
+                        questionsText += `${index + 1}. [${q.difficulty.toUpperCase()}] [${q.question_type}] - ${q.topic}\n`;
+                        questionsText += `   Q: ${q.question}\n`;
+                        questionsText += `   A: ${q.answer}\n\n`;
+                    });
+                    
+                    addMessage('agent', questionsText, 'exam');
+                    
+                    // Also log to console for easy copy
+                    console.log('Exam Questions:', JSON.stringify(data, null, 2));
+                } else {
+                    addSystemMessage(`Error: ${data.error || 'Failed to generate questions'}`);
+                    updateAudioStatus('');
+                }
+            } catch (error) {
+                console.error('Error fetching exam questions:', error);
+                addSystemMessage(`Error fetching exam questions: ${error.message}`);
+                updateAudioStatus('');
+            }
+        }
 
         // Cleanup on page unload
         window.addEventListener('beforeunload', function() {
