@@ -1,0 +1,78 @@
+{
+  "subject": "History",
+  "class_level": "10",
+  "chapter": "A Brief History of India",
+  "total_questions": 10,
+  "questions": [
+    {
+      "question": "What are the main themes discussed in 'A Brief History of India'?",
+      "answer": "The main themes include the diversity of the Indian subcontinent, the origins and development of the caste system, India's religious traditions, and the complexities of democratic majoritarian politics.",
+      "topic": "Overview of Indian History",
+      "difficulty": "medium",
+      "question_type": "factual"
+    },
+    {
+      "question": "Who is the author of 'A Brief History of India'?",
+      "answer": "The author of 'A Brief History of India' is Judith E. Walsh.",
+      "topic": "Authorship",
+      "difficulty": "easy",
+      "question_type": "factual"
+    },
+    {
+      "question": "When did the period of 'Turks, Afghans, and Mughals' take place?",
+      "answer": "The period of 'Turks, Afghans, and Mughals' occurred from 600 to 1800 CE.",
+      "topic": "Historical Periods",
+      "difficulty": "easy",
+      "question_type": "factual"
+    },
+    {
+      "question": "Explain the significance of the 'Jewel in the Crown' in the context of British India.",
+      "answer": "The 'Jewel in the Crown' refers to India's status as the most valuable colony of the British Empire, highlighting its economic and strategic importance during the colonial period.",
+      "topic": "Colonial India",
+      "difficulty": "medium",
+      "question_type": "conceptual"
+    },
+    {
+      "question": "Describe the impact of English education on Indian society in the 19th century.",
+      "answer": "English education in the 19th century produced an elite class of Indians who became politically active and began to articulate their views against British colonialism, fostering a sense of nationalism.",
+      "topic": "Education and Nationalism",
+      "difficulty": "medium",
+      "question_type": "analytical"
+    },
+    {
+      "question": "What role did women play in the social reform movements in colonial India?",
+      "answer": "Women played a crucial role in social reform movements, advocating for education and rights, which contributed to the broader struggle for gender equality in Indian society.",
+      "topic": "Women in Colonial India",
+      "difficulty": "medium",
+      "question_type": "conceptual"
+    },
+    {
+      "question": "Compare the caste system's influence in ancient India with its role in modern Indian politics.",
+      "answer": "In ancient India, the caste system was a social hierarchy affecting daily life and duties, while in modern Indian politics, it has reemerged as a significant factor influencing electoral politics and identity.",
+      "topic": "Caste System",
+      "difficulty": "hard",
+      "question_type": "analytical"
+    },
+    {
+      "question": "What was the primary objective of the Nationalist Movement led by Gandhi?",
+      "answer": "The primary objective of the Nationalist Movement led by Gandhi was to achieve independence from British rule through non-violent civil disobedience and mass mobilization.",
+      "topic": "Gandhi and Nationalism",
+      "difficulty": "medium",
+      "question_type": "factual"
+    },
+    {
+      "question": "Discuss the role of the Temple at Somnath in Indian history.",
+      "answer": "The Temple at Somnath is significant in Indian history as it symbolizes the cultural and religious heritage of India, and its destruction and subsequent rebuilding reflect the historical conflicts and resilience of Indian civilization.",
+      "topic": "Cultural Heritage",
+      "difficulty": "hard",
+      "question_type": "analytical"
+    },
+    {
+      "question": "When did the phase 'Toward Freedom' occur in Indian history?",
+      "answer": "The phase 'Toward Freedom' occurred from 1885 to 1920, marking a critical period in the Indian Nationalist Movement aiming for self-rule.",
+      "topic": "Nationalist Movements",
+      "difficulty": "easy",
+      "question_type": "factual"
+    }
+  ]
+}
