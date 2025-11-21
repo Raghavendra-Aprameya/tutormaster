@@ -1,0 +1,612 @@
+"""
+FastAPI WebSocket server for Interactive Teaching Agent
+Exposes the teaching agent via WebSocket for real-time communication
+Includes ElevenLabs TTS for voice responses
+"""
+
+import os
+import json
+import asyncio
+import base64
+from typing import Dict, List, Optional
+from datetime import datetime
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
+import uvicorn
+import aiohttp
+from dotenv import load_dotenv
+
+from teaching_agent import TeachingAgent
+
+# Load environment variables
+load_dotenv()
+
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="Interactive Teaching Agent API",
+    description="WebSocket-based AI teaching assistant for History Class 10",
+    version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify allowed origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Connection manager for WebSocket connections
+class ConnectionManager:
+    """Manages WebSocket connections and teaching agent instances"""
+    
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+        self.teaching_agents: Dict[str, TeachingAgent] = {}
+    
+    async def connect(self, websocket: WebSocket, client_id: str):
+        """Accept and store new WebSocket connection"""
+        await websocket.accept()
+        self.active_connections[client_id] = websocket
+        # Create new teaching agent for this connection
+        self.teaching_agents[client_id] = TeachingAgent()
+        print(f"Client {client_id} connected. Active connections: {len(self.active_connections)}")
+    
+    def disconnect(self, client_id: str):
+        """Remove connection and clean up"""
+        if client_id in self.active_connections:
+            del self.active_connections[client_id]
+        if client_id in self.teaching_agents:
+            del self.teaching_agents[client_id]
+        print(f"Client {client_id} disconnected. Active connections: {len(self.active_connections)}")
+    
+    async def send_message(self, client_id: str, message: dict):
+        """Send message to specific client"""
+        if client_id in self.active_connections:
+            websocket = self.active_connections[client_id]
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                print(f"Error sending message to {client_id}: {str(e)}")
+                # Connection might be closed, remove it
+                if client_id in self.active_connections:
+                    del self.active_connections[client_id]
+                if client_id in self.teaching_agents:
+                    del self.teaching_agents[client_id]
+    
+    def get_agent(self, client_id: str) -> TeachingAgent:
+        """Get teaching agent for specific client"""
+        return self.teaching_agents.get(client_id)
+
+
+# Create connection manager instance
+manager = ConnectionManager()
+
+
+# ElevenLabs TTS Configuration
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Default voice: Rachel
+ELEVENLABS_API_URL = "https://api.elevenlabs.io/v1/text-to-speech"
+
+
+async def generate_tts_audio(text: str, voice_id: str = ELEVENLABS_VOICE_ID) -> Optional[bytes]:
+    """
+    Generate TTS audio using ElevenLabs API
+    
+    Args:
+        text: Text to convert to speech
+        voice_id: ElevenLabs voice ID (default from env)
+        
+    Returns:
+        Audio bytes (MP3 format) or None if error
+    """
+    if not ELEVENLABS_API_KEY:
+        print("Warning: ELEVENLABS_API_KEY not set. TTS will be disabled.")
+        return None
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"{ELEVENLABS_API_URL}/{voice_id}"
+            headers = {
+                "Accept": "audio/mpeg",
+                "Content-Type": "application/json",
+                "xi-api-key": ELEVENLABS_API_KEY
+            }
+            data = {
+                "text": text,
+                "model_id": "eleven_monolingual_v1",
+                "voice_settings": {
+                    "stability": 0.5,
+                    "similarity_boost": 0.75
+                }
+            }
+            
+            async with session.post(url, json=data, headers=headers) as response:
+                if response.status == 200:
+                    audio_bytes = await response.read()
+                    return audio_bytes
+                else:
+                    error_text = await response.text()
+                    print(f"ElevenLabs API error: {response.status} - {error_text}")
+                    return None
+    except Exception as e:
+        print(f"Error generating TTS audio: {str(e)}")
+        return None
+
+
+async def stream_response_with_tts(websocket: WebSocket, text: str, metadata: dict):
+    """
+    Stream text response and generate TTS audio
+    
+    Args:
+        websocket: WebSocket connection
+        text: Response text to stream
+        metadata: Additional metadata to include
+    """
+    try:
+        # Send text response immediately
+        await websocket.send_json({
+            "type": "response",
+            "response": text,
+            **metadata,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        print(f"Error sending text response: {str(e)}")
+        raise
+    
+    try:
+        # Generate and send audio
+        audio_bytes = await generate_tts_audio(text)
+        if audio_bytes:
+            # Convert audio to base64 for JSON transmission
+            audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+            await websocket.send_json({
+                "type": "audio",
+                "audio": audio_base64,
+                "format": "mp3",
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        else:
+            # Send error if TTS fails (only if connection is still open)
+            try:
+                await websocket.send_json({
+                    "type": "audio_error",
+                    "message": "Failed to generate audio",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+            except Exception:
+                # Connection might be closed, ignore
+                pass
+    except Exception as e:
+        print(f"Error sending audio: {str(e)}")
+        # Don't raise - audio failure shouldn't break the connection
+
+
+@app.get("/")
+async def root():
+    """Root endpoint with basic info"""
+    return {
+        "message": "Interactive Teaching Agent WebSocket API",
+        "version": "1.0.0",
+        "websocket_endpoint": "/ws/{client_id}",
+        "status": "active",
+        "subject": "History",
+        "class_level": "10",
+        "chapter": "A Brief History of India"
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "active_connections": len(manager.active_connections),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@app.get("/demo", response_class=HTMLResponse)
+async def demo_client():
+    """Simple HTML demo client for testing WebSocket"""
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Teaching Agent WebSocket Demo</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                max-width: 800px;
+                margin: 50px auto;
+                padding: 20px;
+            }
+            #chat-container {
+                border: 1px solid #ccc;
+                height: 400px;
+                overflow-y: auto;
+                padding: 10px;
+                margin-bottom: 10px;
+                background-color: #f9f9f9;
+            }
+            .message {
+                margin: 10px 0;
+                padding: 10px;
+                border-radius: 5px;
+            }
+            .user-message {
+                background-color: #e3f2fd;
+                text-align: right;
+            }
+            .agent-message {
+                background-color: #f1f8e9;
+            }
+            .system-message {
+                background-color: #fff3e0;
+                font-style: italic;
+            }
+            #input-container {
+                display: flex;
+                gap: 10px;
+            }
+            #message-input {
+                flex: 1;
+                padding: 10px;
+                font-size: 14px;
+            }
+            #send-button {
+                padding: 10px 20px;
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                cursor: pointer;
+                font-size: 14px;
+            }
+            #send-button:disabled {
+                background-color: #ccc;
+                cursor: not-allowed;
+            }
+            #status {
+                padding: 10px;
+                margin-bottom: 10px;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            .connected { background-color: #c8e6c9; }
+            .disconnected { background-color: #ffcdd2; }
+            .audio-indicator {
+                display: inline-block;
+                margin-left: 10px;
+                font-size: 12px;
+                color: #666;
+            }
+            .audio-playing {
+                color: #4CAF50;
+                font-weight: bold;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Interactive Teaching Agent - WebSocket Demo</h1>
+        <div id="status" class="disconnected">Status: Disconnected</div>
+        <div id="audio-status" class="audio-indicator"></div>
+        
+        <div id="chat-container"></div>
+        
+        <div id="input-container">
+            <input type="text" id="message-input" placeholder="Type your message..." disabled>
+            <button id="send-button" disabled>Send</button>
+        </div>
+        
+        <div style="margin-top: 20px;">
+            <h3>Try these commands:</h3>
+            <ul>
+                <li>"teach me about ancient India"</li>
+                <li>"tell me more"</li>
+                <li>"what year was the Indus Valley discovered?"</li>
+                <li>"continue"</li>
+            </ul>
+        </div>
+
+        <script>
+            const clientId = 'demo_' + Math.random().toString(36).substr(2, 9);
+            let ws = null;
+            
+            const chatContainer = document.getElementById('chat-container');
+            const messageInput = document.getElementById('message-input');
+            const sendButton = document.getElementById('send-button');
+            const statusDiv = document.getElementById('status');
+            const audioStatusDiv = document.getElementById('audio-status');
+            
+            function connect() {
+                ws = new WebSocket(`ws://localhost:8000/ws/${clientId}`);
+                
+                ws.onopen = function(event) {
+                    statusDiv.textContent = 'Status: Connected';
+                    statusDiv.className = 'connected';
+                    messageInput.disabled = false;
+                    sendButton.disabled = false;
+                    addMessage('system', 'Connected to teaching agent!');
+                };
+                
+                ws.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                };
+                
+                ws.onerror = function(error) {
+                    addMessage('system', 'WebSocket error occurred');
+                    console.error('WebSocket error:', error);
+                };
+                
+                ws.onclose = function(event) {
+                    statusDiv.textContent = 'Status: Disconnected';
+                    statusDiv.className = 'disconnected';
+                    messageInput.disabled = true;
+                    sendButton.disabled = true;
+                    addMessage('system', 'Disconnected from server');
+                };
+            }
+            
+            let currentAudio = null;
+            let audioQueue = [];
+            let isPlayingAudio = false;
+            
+            function handleMessage(data) {
+                if (data.type === 'response') {
+                    addMessage('agent', data.response);
+                    
+                    // Add metadata if available
+                    if (data.mode) {
+                        addMessage('system', `Mode: ${data.mode}`);
+                    }
+                } else if (data.type === 'audio') {
+                    // Handle audio data
+                    handleAudio(data);
+                } else if (data.type === 'audio_error') {
+                    addMessage('system', `Audio Error: ${data.message}`);
+                } else if (data.type === 'error') {
+                    addMessage('system', `Error: ${data.message}`);
+                }
+            }
+            
+            function handleAudio(data) {
+                // Decode base64 audio
+                const audioData = atob(data.audio);
+                const audioArray = new Uint8Array(audioData.length);
+                for (let i = 0; i < audioData.length; i++) {
+                    audioArray[i] = audioData.charCodeAt(i);
+                }
+                
+                // Create blob and audio element
+                const blob = new Blob([audioArray], { type: 'audio/mpeg' });
+                const audioUrl = URL.createObjectURL(blob);
+                const audio = new Audio(audioUrl);
+                
+                // Add to queue
+                audioQueue.push(audio);
+                
+                // Play if not already playing
+                if (!isPlayingAudio) {
+                    playNextAudio();
+                }
+            }
+            
+            function playNextAudio() {
+                if (audioQueue.length === 0) {
+                    isPlayingAudio = false;
+                    audioStatusDiv.textContent = '';
+                    audioStatusDiv.classList.remove('audio-playing');
+                    return;
+                }
+                
+                isPlayingAudio = true;
+                audioStatusDiv.textContent = '🔊 Playing audio...';
+                audioStatusDiv.classList.add('audio-playing');
+                
+                const audio = audioQueue.shift();
+                
+                audio.onended = function() {
+                    URL.revokeObjectURL(audio.src);
+                    playNextAudio();
+                };
+                
+                audio.onerror = function(e) {
+                    console.error('Audio playback error:', e);
+                    URL.revokeObjectURL(audio.src);
+                    audioStatusDiv.textContent = '❌ Audio error';
+                    playNextAudio();
+                };
+                
+                audio.play().catch(function(error) {
+                    console.error('Error playing audio:', error);
+                    URL.revokeObjectURL(audio.src);
+                    audioStatusDiv.textContent = '❌ Playback failed';
+                    playNextAudio();
+                });
+            }
+            
+            function addMessage(sender, text) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message ' + sender + '-message';
+                
+                const timestamp = new Date().toLocaleTimeString();
+                const senderLabel = sender === 'user' ? 'You' : 
+                                   sender === 'agent' ? 'Teacher' : 'System';
+                
+                messageDiv.innerHTML = `<strong>${senderLabel}</strong> (${timestamp})<br>${text}`;
+                chatContainer.appendChild(messageDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+            
+            function sendMessage() {
+                const message = messageInput.value.trim();
+                if (message && ws && ws.readyState === WebSocket.OPEN) {
+                    addMessage('user', message);
+                    ws.send(JSON.stringify({
+                        type: 'message',
+                        content: message
+                    }));
+                    messageInput.value = '';
+                }
+            }
+            
+            sendButton.onclick = sendMessage;
+            
+            messageInput.onkeypress = function(event) {
+                if (event.key === 'Enter') {
+                    sendMessage();
+                }
+            };
+            
+            // Connect on load
+            connect();
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    """
+    WebSocket endpoint for real-time communication with teaching agent
+    
+    Message format (client -> server):
+    {
+        "type": "message",
+        "content": "user message text"
+    }
+    
+    Response format (server -> client):
+    {
+        "type": "response",
+        "response": "agent response text",
+        "mode": "teaching" or "qa",
+        "timestamp": "ISO timestamp"
+    }
+    """
+    await manager.connect(websocket, client_id)
+    
+    # Send welcome message (with error handling)
+    try:
+        await manager.send_message(client_id, {
+            "type": "system",
+            "message": "Connected to Interactive Teaching Agent (History Class 10)",
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        print(f"Error sending welcome message to {client_id}: {str(e)}")
+    
+    try:
+        while True:
+            # Receive message from client
+            data = await websocket.receive_text()
+            
+            try:
+                message_data = json.loads(data)
+                
+                # Validate message format
+                if message_data.get("type") != "message":
+                    await manager.send_message(client_id, {
+                        "type": "error",
+                        "message": "Invalid message type. Expected 'message'",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    continue
+                
+                user_message = message_data.get("content", "").strip()
+                
+                if not user_message:
+                    await manager.send_message(client_id, {
+                        "type": "error",
+                        "message": "Empty message received",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    continue
+                
+                # Get teaching agent for this client
+                agent = manager.get_agent(client_id)
+                
+                if not agent:
+                    await manager.send_message(client_id, {
+                        "type": "error",
+                        "message": "Agent not initialized",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                    continue
+                
+                # Process message through teaching agent
+                print(f"Processing message from {client_id}: {user_message[:50]}...")
+                response = agent.process_message(user_message)
+                
+                # Prepare metadata
+                metadata = {
+                    "mode": agent.current_mode,
+                    "current_topic": agent.current_topic,
+                    "next_topic": agent.next_topic,
+                    "topics_to_teach": agent.topics_to_teach,
+                    "topics_covered": agent.teaching_context.get("topics_covered", []),
+                    "current_topic_complete": agent.current_topic_complete,
+                }
+                
+                # Stream response with TTS
+                await stream_response_with_tts(websocket, response, metadata)
+                
+            except json.JSONDecodeError:
+                try:
+                    await manager.send_message(client_id, {
+                        "type": "error",
+                        "message": "Invalid JSON format",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                except Exception:
+                    # Connection might be closed
+                    pass
+            except Exception as e:
+                print(f"Error processing message: {str(e)}")
+                try:
+                    await manager.send_message(client_id, {
+                        "type": "error",
+                        "message": f"Error processing message: {str(e)}",
+                        "timestamp": datetime.utcnow().isoformat()
+                    })
+                except Exception:
+                    # Connection might be closed
+                    pass
+    
+    except WebSocketDisconnect:
+        manager.disconnect(client_id)
+    except Exception as e:
+        print(f"WebSocket error for {client_id}: {str(e)}")
+        manager.disconnect(client_id)
+
+
+if __name__ == "__main__":
+    print("=" * 80)
+    print("Starting Interactive Teaching Agent WebSocket Server")
+    print("=" * 80)
+    print(f"Subject: History")
+    print(f"Class Level: 10")
+    print(f"Chapter: A Brief History of India")
+    print(f"\nEndpoints:")
+    print(f"  - WebSocket: ws://localhost:8000/ws/{{client_id}}")
+    print(f"  - Demo Client: http://localhost:8000/demo")
+    print(f"  - Health Check: http://localhost:8000/health")
+    print("=" * 80)
+    
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info"
+    )
+

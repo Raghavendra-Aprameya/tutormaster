@@ -1,0 +1,17 @@
+python-dotenv
+langchain
+langchain-openai
+langchain-chroma
+langchain-huggingface
+psycopg2-binary
+chromadb
+langchain-community
+pypdf
+sentence-transformers
+torch
+fastapi
+uvicorn[standard]
+websockets
+python-multipart
+elevenlabs
+aiohttp
