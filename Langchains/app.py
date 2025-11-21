@@ -11,7 +11,7 @@ import base64
 from typing import Dict, List, Optional
 from datetime import datetime
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 import uvicorn
@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 
 from teaching_agent import TeachingAgent
 from exam_question_generator import ExamQuestionGenerator, SUBJECT, CLASS_LEVEL, CHAPTER
+from answer_evaluator import AnswerEvaluator
 
 # Load environment variables
 load_dotenv()
@@ -272,6 +273,137 @@ async def generate_exam_questions():
         }
     except Exception as e:
         print(f"Error generating exam questions: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+
+@app.post("/api/evaluate-answer")
+async def evaluate_answer(request: Request):
+    """
+    Evaluate a student's answer against the correct answer.
+    
+    Request body:
+    {
+        "question": "Question text",
+        "answer": "Correct answer",
+        "student_answer": "Student's answer"
+    }
+    
+    Returns:
+        JSON response with score (out of 10), feedback, and evaluation details
+    """
+    try:
+        # Parse request body
+        body = await request.json()
+        
+        # Validate request
+        if not body:
+            return {
+                "success": False,
+                "error": "Request body is required",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        question = body.get("question", "").strip()
+        correct_answer = body.get("answer", "").strip()
+        student_answer = body.get("student_answer", "").strip()
+        
+        if not question:
+            return {
+                "success": False,
+                "error": "Question is required",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        if not correct_answer:
+            return {
+                "success": False,
+                "error": "Correct answer is required",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        # Initialize evaluator
+        evaluator = AnswerEvaluator()
+        
+        # Evaluate answer
+        evaluation = evaluator.evaluate_answer(question, correct_answer, student_answer)
+        
+        return {
+            "success": True,
+            "question": question,
+            "evaluation": evaluation,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        print(f"Error evaluating answer: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+
+@app.post("/api/evaluate-answers")
+async def evaluate_multiple_answers(request: Request):
+    """
+    Evaluate multiple student answers at once.
+    
+    Request body:
+    {
+        "evaluations": [
+            {
+                "question": "Question 1",
+                "answer": "Correct answer 1",
+                "student_answer": "Student answer 1"
+            },
+            {
+                "question": "Question 2",
+                "answer": "Correct answer 2",
+                "student_answer": "Student answer 2"
+            }
+        ]
+    }
+    
+    Returns:
+        JSON response with overall results and individual evaluations
+    """
+    try:
+        # Parse request body
+        body = await request.json()
+        
+        # Validate request
+        if not body or "evaluations" not in body:
+            return {
+                "success": False,
+                "error": "Request body must contain 'evaluations' array",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        evaluations = body.get("evaluations", [])
+        
+        if not isinstance(evaluations, list) or len(evaluations) == 0:
+            return {
+                "success": False,
+                "error": "Evaluations must be a non-empty array",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        # Initialize evaluator
+        evaluator = AnswerEvaluator()
+        
+        # Evaluate all answers
+        result = evaluator.evaluate_multiple_answers(evaluations)
+        
+        return {
+            "success": True,
+            "results": result,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        print(f"Error evaluating answers: {str(e)}")
         return {
             "success": False,
             "error": str(e),
