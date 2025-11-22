@@ -58,14 +58,25 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
         self.teaching_agents: Dict[str, TeachingAgent] = {}
+        self.study_material_ids: Dict[str, str] = {}  # Store study_material_id per client
     
-    async def connect(self, websocket: WebSocket, client_id: str):
+    async def connect(self, websocket: WebSocket, client_id: str, study_material_id: str = None, subject: str = None, class_level: str = None, chapter: str = None):
         """Accept and store new WebSocket connection"""
         await websocket.accept()
         self.active_connections[client_id] = websocket
-        # Create new teaching agent for this connection
-        self.teaching_agents[client_id] = TeachingAgent()
+        # Store study_material_id for this client
+        if study_material_id:
+            self.study_material_ids[client_id] = study_material_id
+        # Create new teaching agent for this connection with study_material_id
+        self.teaching_agents[client_id] = TeachingAgent(
+            subject=subject,
+            class_level=class_level,
+            chapter=chapter,
+            study_material_id=study_material_id
+        )
         print(f"Client {client_id} connected. Active connections: {len(self.active_connections)}")
+        if study_material_id:
+            print(f"  Using study_material_id: {study_material_id}")
     
     def disconnect(self, client_id: str):
         """Remove connection and clean up"""
@@ -73,6 +84,8 @@ class ConnectionManager:
             del self.active_connections[client_id]
         if client_id in self.teaching_agents:
             del self.teaching_agents[client_id]
+        if client_id in self.study_material_ids:
+            del self.study_material_ids[client_id]
         print(f"Client {client_id} disconnected. Active connections: {len(self.active_connections)}")
     
     async def send_message(self, client_id: str, message: dict):
@@ -222,6 +235,15 @@ async def health_check():
     }
 
 
+# Request schema for exam questions (defined before endpoints)
+class ExamQuestionsRequestSchema(BaseModel):
+    study_material_id: Optional[str] = None
+    subject: Optional[str] = None
+    class_level: Optional[str] = None
+    chapter: Optional[str] = None
+    num_questions: Optional[int] = 10
+
+
 @app.get("/api/exam-questions")
 async def get_exam_questions():
     """
@@ -256,31 +278,66 @@ async def get_exam_questions():
 
 
 @app.post("/api/exam-questions")
-async def generate_exam_questions():
+async def generate_exam_questions(request: ExamQuestionsRequestSchema = Body(None)):
     """
-    Generate 10 exam-style questions and answers from the document (POST endpoint).
+    Generate exam-style questions and answers from the document (POST endpoint).
+    
+    Request body (optional):
+    {
+        "study_material_id": "uuid-from-postgres",
+        "subject": "History",
+        "class_level": "10",
+        "chapter": "Chapter 1 Notes",
+        "num_questions": 10
+    }
+    
+    If study_material_id is provided, it will filter embeddings by that ID from ChromaDB.
+    If not provided, uses subject, class_level, and chapter to filter.
     
     Returns:
-        JSON response with 10 exam questions and answers
+        JSON response with exam questions and answers
     """
     try:
-        # Initialize generator
-        generator = ExamQuestionGenerator()
+        # Parse request body if provided
+        subject = None
+        class_level = None
+        chapter = None
+        study_material_id = None
+        num_questions = 10
         
-        # Generate exactly 10 questions
-        result = generator.generate_exam_questions(num_questions=10)
+        if request:
+            study_material_id = request.study_material_id
+            subject = request.subject
+            class_level = request.class_level
+            chapter = request.chapter
+            num_questions = request.num_questions or 10
+        
+        # Initialize generator with parameters
+        generator = ExamQuestionGenerator(
+            subject=subject,
+            class_level=class_level,
+            chapter=chapter,
+            study_material_id=study_material_id
+        )
+        
+        print(f"Generating {num_questions} exam questions - study_material_id: {study_material_id}, subject: {subject}, class_level: {class_level}, chapter: {chapter}")
+        
+        # Generate questions
+        result = generator.generate_exam_questions(num_questions=num_questions)
         
         return {
             "success": True,
-            "subject": SUBJECT,
-            "class_level": CLASS_LEVEL,
-            "chapter": CHAPTER,
+            "subject": generator.subject,
+            "class_level": generator.class_level,
+            "chapter": generator.chapter,
             "total_questions": len(result),
             "questions": result,
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
         print(f"Error generating exam questions: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {
             "success": False,
             "error": str(e),
@@ -360,6 +417,8 @@ class RevisionPointersRequest(BaseModel):
     subject: Optional[str] = None
     class_level: Optional[str] = None
     chapter: Optional[str] = None
+
+
 
 
 @app.get("/api/revision-pointers")
@@ -907,10 +966,16 @@ async def demo_client():
     return HTMLResponse(content=html_content)
 
 
-@app.websocket("/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str):
+@app.websocket("/ws/{study_material_id}")
+async def websocket_endpoint(websocket: WebSocket, study_material_id: str):
     """
     WebSocket endpoint for real-time communication with teaching agent
+    
+    Path parameters:
+    - study_material_id: Study material ID (UUID) from PostgreSQL to filter context
+    
+    The teaching agent will use all documents related to this study_material_id as context
+    throughout the session. The study_material_id is also used as the client_id for connection management.
     
     Message format (client -> server):
     {
@@ -926,13 +991,18 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
         "timestamp": "ISO timestamp"
     }
     """
-    await manager.connect(websocket, client_id)
+    # Use study_material_id as client_id for connection management
+    client_id = study_material_id
+    # For now, we'll connect without subject/class/chapter - they'll be fetched from DB if needed
+    # The study_material_id will be used to filter ChromaDB directly
+    await manager.connect(websocket, client_id, study_material_id=study_material_id)
     
     # Send welcome message (with error handling)
     try:
+        study_material_id_msg = f" (Study Material ID: {study_material_id})" if study_material_id else ""
         await manager.send_message(client_id, {
             "type": "system",
-            "message": "Connected to Interactive Teaching Agent (History Class 10)",
+            "message": f"Connected to Interactive Teaching Agent{study_material_id_msg}. All responses will be based on the documents for this study material.",
             "timestamp": datetime.utcnow().isoformat()
         })
     except Exception as e:
@@ -1044,7 +1114,7 @@ if __name__ == "__main__":
     print(f"Class Level: 10")
     print(f"Chapter: A Brief History of India")
     print(f"\nEndpoints:")
-    print(f"  - WebSocket: ws://localhost:8000/ws/{{client_id}}")
+    print(f"  - WebSocket: ws://localhost:8000/ws/{{study_material_id}}")
     print(f"  - Demo Client: http://localhost:8000/demo")
     print(f"  - Health Check: http://localhost:8000/health")
     print("=" * 80)

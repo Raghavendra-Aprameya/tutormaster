@@ -26,14 +26,27 @@ class TeachingAgent:
     CLASS_LEVEL = "10"
     CHAPTER = "A Brief History of India"  # Default chapter
     
-    def __init__(self):
-        """Initialize the teaching agent with LangChain agent framework"""
+    def __init__(self, subject: str = None, class_level: str = None, chapter: str = None, study_material_id: str = None):
+        """
+        Initialize the teaching agent with LangChain agent framework
+        
+        Args:
+            subject: Subject name (e.g., "History")
+            class_level: Class level/grade (e.g., "10")
+            chapter: Chapter/title name (e.g., "A Brief History of India")
+            study_material_id: Study material ID from PostgreSQL (used to filter embeddings)
+        """
+        self.subject = subject or self.SUBJECT
+        self.class_level = class_level or self.CLASS_LEVEL
+        self.chapter = chapter or self.CHAPTER
+        self.study_material_id = study_material_id
+        
         self.chat_history: List[Dict[str, str]] = []
         self.current_mode: Optional[str] = None  # "teaching" or "qa"
         self.teaching_context = {
-            "subject": self.SUBJECT,
-            "chapter": self.CHAPTER,
-            "class_level": self.CLASS_LEVEL,
+            "subject": self.subject,
+            "chapter": self.chapter,
+            "class_level": self.class_level,
             "topics_covered": [],
             "current_topic": None,
             "last_teaching_point": "",
@@ -70,7 +83,12 @@ class TeachingAgent:
         """Lazy load teaching tool"""
         if self._teaching_tool_instance is None:
             from interactive_tutor import InteractiveTutorTool
-            self._teaching_tool_instance = InteractiveTutorTool()
+            self._teaching_tool_instance = InteractiveTutorTool(
+                subject=self.subject,
+                class_level=self.class_level,
+                chapter=self.chapter,
+                study_material_id=self.study_material_id
+            )
         return self._teaching_tool_instance
     
     def _get_qa_tool_instance(self):
@@ -96,7 +114,7 @@ class TeachingAgent:
             Returns:
                 Initial teaching message introducing the chapter and first topic
             """
-            return self._start_teaching_internal(self.SUBJECT, self.CHAPTER, self.CLASS_LEVEL)
+            return self._start_teaching_internal(self.subject, self.chapter, self.class_level)
         
         @tool
         def answer_specific_question(question: str) -> str:
@@ -571,9 +589,9 @@ Continue teaching naturally, addressing their follow-up if relevant, then contin
         # Always use hardcoded filter for History Class 10
         filter_meta = {
             "$and": [
-                {"subject": {"$eq": self.SUBJECT}},
-                {"chapter": {"$eq": self.CHAPTER}},
-                {"class_level": {"$eq": self.CLASS_LEVEL}}
+                {"subject": {"$eq": self.subject}},
+                {"chapter": {"$eq": self.chapter}},
+                {"class_level": {"$eq": self.class_level}}
             ]
         }
         

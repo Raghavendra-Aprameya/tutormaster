@@ -110,9 +110,9 @@ class RevisionPointersGenerator:
         if filter_meta:
             results = self.db.similarity_search(
                 query_text,
-                k=k,
-                filter=filter_meta
-            )
+            k=k,
+            filter=filter_meta
+        )
         else:
             results = self.db.similarity_search(query_text, k=k)
         

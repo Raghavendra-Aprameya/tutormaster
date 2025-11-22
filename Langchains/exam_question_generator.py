@@ -42,8 +42,21 @@ class ExamQuestionGenerator:
     Generates exam-style questions and answers from ChromaDB documents.
     """
     
-    def __init__(self):
-        """Initialize the exam question generator"""
+    def __init__(self, subject: str = None, class_level: str = None, chapter: str = None, study_material_id: str = None):
+        """
+        Initialize the exam question generator
+        
+        Args:
+            subject: Subject name (e.g., "History")
+            class_level: Class level/grade (e.g., "10")
+            chapter: Chapter/title name (e.g., "A Brief History of India")
+            study_material_id: Study material ID from PostgreSQL (used to filter embeddings)
+        """
+        self.subject = subject or SUBJECT
+        self.class_level = class_level or CLASS_LEVEL
+        self.chapter = chapter or CHAPTER
+        self.study_material_id = study_material_id
+        
         # Initialize embedding model
         self.embedding_model = HuggingFaceEmbeddings(
             model_name=MODEL_NAME,
@@ -80,15 +93,50 @@ class ExamQuestionGenerator:
         Returns:
             List of document chunks with content and metadata
         """
-        # Use a general query to get diverse content
-        query = f"{CHAPTER} {SUBJECT} Class {CLASS_LEVEL}"
+        # Build filter based on available parameters
+        filter_conditions = []
         
-        print(f"Retrieving {k} chunks from ChromaDB...")
+        # If study_material_id is provided, filter by it (primary filter)
+        if self.study_material_id:
+            filter_conditions.append({"study_material_id": {"$eq": str(self.study_material_id)}})
+            print(f"🔍 Filtering by study_material_id: {self.study_material_id}")
+        
+        # Add subject, chapter, and class_level filters if provided
+        if self.subject:
+            filter_conditions.append({"subject": {"$eq": self.subject}})
+        if self.chapter:
+            filter_conditions.append({"chapter": {"$eq": self.chapter}})
+        if self.class_level:
+            filter_conditions.append({"class_level": {"$eq": str(self.class_level)}})
+        
+        # Build filter metadata
+        if filter_conditions:
+            if len(filter_conditions) == 1:
+                filter_meta = filter_conditions[0]
+            else:
+                filter_meta = {"$and": filter_conditions}
+        else:
+            filter_meta = FILTER_META  # Use default filter
+        
+        # Use a general query to get diverse content
+        query = f"{self.chapter} {self.subject} Class {self.class_level}"
+        
+        print(f"🔍 Retrieving {k} chunks from ChromaDB with filter: {filter_meta}")
         results = self.db.similarity_search(
             query,
             k=k,
-            filter=FILTER_META
+            filter=filter_meta
         )
+        
+        if not results:
+            print(f"⚠️ Warning: No documents found with filter: {filter_meta}")
+            # Try fallback: filter by document_id if study_material_id didn't work
+            if self.study_material_id:
+                print(f"🔄 Trying fallback: filtering by document_id instead of study_material_id")
+                fallback_filter = {"document_id": {"$eq": str(self.study_material_id)}}
+                results = self.db.similarity_search(query, k=k, filter=fallback_filter)
+                if results:
+                    print(f"✅ Fallback successful: Found {len(results)} chunks using document_id")
         
         chunks = []
         for doc in results:
@@ -97,7 +145,7 @@ class ExamQuestionGenerator:
                 "metadata": doc.metadata
             })
         
-        print(f"Retrieved {len(chunks)} chunks")
+        print(f"✅ Retrieved {len(chunks)} chunks")
         return chunks
     
     def generate_exam_questions(self, num_questions: int = 10) -> List[Dict]:
@@ -166,9 +214,9 @@ Questions and Answers:"""
         prompt = prompt_template.format(
             context=context[:15000],  # Limit context to avoid token limits
             num_questions=num_questions,
-            subject=SUBJECT,
-            class_level=CLASS_LEVEL,
-            chapter=CHAPTER
+            subject=self.subject,
+            class_level=self.class_level,
+            chapter=self.chapter
         )
         
         print(f"Generating {num_questions} exam questions...")

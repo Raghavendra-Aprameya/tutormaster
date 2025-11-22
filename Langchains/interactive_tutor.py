@@ -24,8 +24,21 @@ class InteractiveTutorTool:
     Provides comprehensive interactive teaching for chapters.
     """
     
-    def __init__(self):
-        """Initialize the embedding model and ChromaDB connection"""
+    def __init__(self, subject: str = None, class_level: str = None, chapter: str = None, study_material_id: str = None):
+        """
+        Initialize the embedding model and ChromaDB connection
+        
+        Args:
+            subject: Subject name (e.g., "History")
+            class_level: Class level/grade (e.g., "10")
+            chapter: Chapter/title name (e.g., "A Brief History of India")
+            study_material_id: Study material ID from PostgreSQL (used to filter embeddings)
+        """
+        self.subject = subject
+        self.class_level = class_level
+        self.chapter = chapter
+        self.study_material_id = study_material_id
+        
         # Initialize embedding model
         self.embedding_model = HuggingFaceEmbeddings(
             model_name=MODEL_NAME,
@@ -103,6 +116,41 @@ class InteractiveTutorTool:
             print(f"Error getting available chapters: {str(e)}")
             return []
     
+    def _build_filter(self, subject: str = None, chapter: str = None, class_level: str = None) -> dict:
+        """
+        Build ChromaDB filter with study_material_id support.
+        
+        Args:
+            subject: Subject name
+            chapter: Chapter title
+            class_level: Class level
+            
+        Returns:
+            Filter dictionary for ChromaDB
+        """
+        filter_conditions = []
+        
+        # If study_material_id is provided, filter by it (primary filter)
+        if self.study_material_id:
+            filter_conditions.append({"study_material_id": {"$eq": str(self.study_material_id)}})
+        
+        # Add subject, chapter, and class_level filters if provided
+        if subject:
+            filter_conditions.append({"subject": {"$eq": subject}})
+        if chapter:
+            filter_conditions.append({"chapter": {"$eq": chapter}})
+        if class_level:
+            filter_conditions.append({"class_level": {"$eq": str(class_level)}})
+        
+        # Build filter metadata
+        if filter_conditions:
+            if len(filter_conditions) == 1:
+                return filter_conditions[0]
+            else:
+                return {"$and": filter_conditions}
+        else:
+            return None
+    
     def extract_topics(self, subject: str, chapter: str, class_level: str) -> List[str]:
         """
         Extract main topics from a chapter by analyzing its chunks.
@@ -117,23 +165,32 @@ class InteractiveTutorTool:
         """
         try:
             # Retrieve sample chunks from the chapter (spread across pages)
-            filter_meta = {
-                "$and": [
-                    {"subject": {"$eq": subject}},
-                    {"chapter": {"$eq": chapter}},
-                    {"class_level": {"$eq": class_level}}
-                ]
-            }
+            filter_meta = self._build_filter(subject, chapter, class_level)
             
             # Get diverse chunks using a generic query
-            results = self.db.similarity_search(
-                "main topics concepts overview",
-                k=20,  # Get more chunks to analyze
-                filter=filter_meta
-            )
+            if filter_meta:
+                results = self.db.similarity_search(
+                    "main topics concepts overview",
+                    k=20,  # Get more chunks to analyze
+                    filter=filter_meta
+                )
+            else:
+                results = self.db.similarity_search(
+                    "main topics concepts overview",
+                    k=20
+                )
             
             if not results:
-                return ["General Introduction", "Key Concepts", "Conclusion"]
+                # Try fallback: filter by document_id if study_material_id didn't work
+                if self.study_material_id:
+                    print(f"🔄 Trying fallback: filtering by document_id instead of study_material_id")
+                    fallback_filter = {"document_id": {"$eq": str(self.study_material_id)}}
+                    results = self.db.similarity_search("main topics concepts overview", k=20, filter=fallback_filter)
+                    if results:
+                        print(f"✅ Fallback successful: Found {len(results)} chunks using document_id")
+                
+                if not results:
+                    return ["General Introduction", "Key Concepts", "Conclusion"]
             
             # Sample chunks from different pages
             sampled_chunks = []
@@ -191,20 +248,28 @@ Format: Just list the topics, one per line, without numbers or bullets."""
             List of chunk dictionaries with content and metadata
         """
         try:
-            filter_meta = {
-                "$and": [
-                    {"subject": {"$eq": subject}},
-                    {"chapter": {"$eq": chapter}},
-                    {"class_level": {"$eq": class_level}}
-                ]
-            }
+            filter_meta = self._build_filter(subject, chapter, class_level)
             
             # Use a broad query to get all chunks
-            results = self.db.similarity_search(
-                "comprehensive overview all topics",
-                k=100,  # Get many chunks
-                filter=filter_meta
-            )
+            if filter_meta:
+                results = self.db.similarity_search(
+                    "comprehensive overview all topics",
+                    k=100,  # Get many chunks
+                    filter=filter_meta
+                )
+            else:
+                results = self.db.similarity_search(
+                    "comprehensive overview all topics",
+                    k=100
+                )
+            
+            if not results and self.study_material_id:
+                # Try fallback: filter by document_id if study_material_id didn't work
+                print(f"🔄 Trying fallback: filtering by document_id instead of study_material_id")
+                fallback_filter = {"document_id": {"$eq": str(self.study_material_id)}}
+                results = self.db.similarity_search("comprehensive overview all topics", k=100, filter=fallback_filter)
+                if results:
+                    print(f"✅ Fallback successful: Found {len(results)} chunks using document_id")
             
             chunks = [
                 {
