@@ -8,12 +8,15 @@ import os
 import json
 import asyncio
 import base64
+import sys
+import tempfile
 from typing import Dict, List, Optional
 from datetime import datetime
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Body, HTTPException, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 import uvicorn
 import aiohttp
 from dotenv import load_dotenv
@@ -22,6 +25,10 @@ from teaching_agent import TeachingAgent
 from exam_question_generator import ExamQuestionGenerator, SUBJECT, CLASS_LEVEL, CHAPTER
 from answer_evaluator import AnswerEvaluator
 from revision_pointers_generator import RevisionPointersGenerator
+
+# Import embedding functions from parent directory
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from create_embeddings import ingest_file_to_chroma
 
 # Load environment variables
 load_dotenv()
@@ -347,17 +354,43 @@ async def evaluate_answer(request: Request):
         }
 
 
+# Request schema for revision pointers
+class RevisionPointersRequest(BaseModel):
+    study_material_id: Optional[str] = None
+    subject: Optional[str] = None
+    class_level: Optional[str] = None
+    chapter: Optional[str] = None
+
+
 @app.get("/api/revision-pointers")
-async def get_revision_pointers():
+async def get_revision_pointers(
+    study_material_id: Optional[str] = Query(None, description="Study Material ID (UUID) from PostgreSQL"),
+    subject: Optional[str] = Query(None, description="Subject name"),
+    class_level: Optional[str] = Query(None, description="Class level"),
+    chapter: Optional[str] = Query(None, description="Chapter name")
+):
     """
     Generate last-minute revision pointers from the entire chapter (GET endpoint).
+    
+    Query parameters (optional):
+    - study_material_id: UUID from PostgreSQL (primary filter)
+    - subject: Subject name
+    - class_level: Class level
+    - chapter: Chapter name
     
     Returns:
         JSON response with a list of revision pointers
     """
     try:
-        # Initialize generator
-        generator = RevisionPointersGenerator()
+        # Initialize generator with parameters
+        generator = RevisionPointersGenerator(
+            subject=subject,
+            class_level=class_level,
+            chapter=chapter,
+            study_material_id=study_material_id
+        )
+        
+        print(f"Generating revision pointers - study_material_id: {study_material_id}, subject: {subject}, class_level: {class_level}, chapter: {chapter}")
         
         # Generate revision pointers
         result = generator.generate_revision_pointers()
@@ -373,6 +406,8 @@ async def get_revision_pointers():
         }
     except Exception as e:
         print(f"Error generating revision pointers: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {
             "success": False,
             "error": str(e),
@@ -381,16 +416,46 @@ async def get_revision_pointers():
 
 
 @app.post("/api/revision-pointers")
-async def generate_revision_pointers():
+async def generate_revision_pointers(request: RevisionPointersRequest = Body(None)):
     """
     Generate last-minute revision pointers from the entire chapter (POST endpoint).
+    
+    Request body (optional):
+    {
+        "study_material_id": "uuid-from-postgres",
+        "subject": "History",
+        "class_level": "10",
+        "chapter": "Chapter 1 Notes"
+    }
+    
+    If study_material_id is provided, it will filter embeddings by that ID from ChromaDB.
+    If not provided, uses subject, class_level, and chapter to filter.
     
     Returns:
         JSON response with a list of revision pointers
     """
     try:
-        # Initialize generator
-        generator = RevisionPointersGenerator()
+        # Parse request body if provided
+        subject = None
+        class_level = None
+        chapter = None
+        study_material_id = None
+        
+        if request:
+            study_material_id = request.study_material_id
+            subject = request.subject
+            class_level = request.class_level
+            chapter = request.chapter
+        
+        # Initialize generator with parameters
+        generator = RevisionPointersGenerator(
+            subject=subject,
+            class_level=class_level,
+            chapter=chapter,
+            study_material_id=study_material_id
+        )
+        
+        print(f"Generating revision pointers - study_material_id: {study_material_id}, subject: {subject}, class_level: {class_level}, chapter: {chapter}")
         
         # Generate revision pointers
         result = generator.generate_revision_pointers()
@@ -406,6 +471,8 @@ async def generate_revision_pointers():
         }
     except Exception as e:
         print(f"Error generating revision pointers: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return {
             "success": False,
             "error": str(e),
@@ -476,6 +543,106 @@ async def evaluate_multiple_answers(request: Request):
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat()
         }
+
+
+# Webhook endpoint for creating embeddings
+class CreateEmbeddingRequest(BaseModel):
+    file_url: str
+    document_id: str
+    subject: str
+    class_level: str
+    title: str
+    filename: Optional[str] = None
+
+
+class RevisionPointersRequest(BaseModel):
+    study_material_id: Optional[str] = None
+    subject: Optional[str] = None
+    class_level: Optional[str] = None
+    chapter: Optional[str] = None
+
+
+@app.post("/api/create-embeddings")
+async def create_embeddings_webhook(request: CreateEmbeddingRequest = Body(...)):
+    """
+    Webhook endpoint to create embeddings for a study material document.
+    
+    This endpoint:
+    1. Downloads the file from Cloudinary URL
+    2. Processes it and creates vector embeddings
+    3. Stores embeddings in ChromaDB
+    
+    Request body:
+    {
+        "file_url": "https://res.cloudinary.com/...",
+        "document_id": "uuid-of-study-material",
+        "subject": "History",
+        "class_level": "10",
+        "title": "Chapter 1 Notes",
+        "filename": "document.pdf" (optional)
+    }
+    """
+    temp_file_path = None
+    try:
+        # Download file from Cloudinary URL
+        async with aiohttp.ClientSession() as session:
+            async with session.get(request.file_url) as response:
+                if response.status != 200:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Failed to download file from URL: {response.status}"
+                    )
+                
+                # Create temporary file
+                file_extension = request.filename.split('.')[-1] if request.filename and '.' in request.filename else 'pdf'
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_extension}')
+                temp_file_path = temp_file.name
+                
+                # Write downloaded content to temp file
+                content = await response.read()
+                temp_file.write(content)
+                temp_file.close()
+        
+        # Process file and create embeddings (run in executor to avoid blocking)
+        # request.document_id is the study_material_id from PostgreSQL
+        study_material_id = request.document_id
+        loop = asyncio.get_event_loop()
+        document_id = await loop.run_in_executor(
+            None,
+            ingest_file_to_chroma,
+            temp_file_path,
+            request.subject,
+            request.title,  # chapter = title
+            request.class_level,
+            study_material_id,  # document_id = study_material_id
+            study_material_id   # study_material_id for metadata
+        )
+        
+        return {
+            "success": True,
+            "message": "Embeddings created successfully",
+            "document_id": document_id,
+            "chunks_ingested": "See logs for details",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating embeddings: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating embeddings: {str(e)}"
+        )
+    finally:
+        # Clean up temporary file
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+            except Exception as e:
+                print(f"Error deleting temp file: {str(e)}")
 
 
 @app.get("/demo", response_class=HTMLResponse)

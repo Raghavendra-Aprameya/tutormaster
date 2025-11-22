@@ -15,10 +15,15 @@ from langchain_chroma import Chroma
 
 load_dotenv()
 
-CHROMA_DIR = "../../chroma_store"
+# Use absolute path based on this file's location
+# This file is in AI/Langchains/, so chroma_store should be at AI/chroma_store
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CHROMA_DIR = os.path.join(BASE_DIR, "chroma_store")
 MODEL_NAME = "BAAI/bge-small-en"
 DEVICE = "cpu"
 COLLECTION_NAME = "chapter_embeddings"
+
+print(f"📁 ChromaDB directory: {CHROMA_DIR}")
 
 
 class RevisionPointersGenerator:
@@ -26,12 +31,21 @@ class RevisionPointersGenerator:
     Generates last-minute revision pointers from chapter content.
     """
     
-    SUBJECT = "History"
-    CLASS_LEVEL = "10"
-    CHAPTER = "A Brief History of India"
-    
-    def __init__(self):
-        """Initialize the revision pointers generator"""
+    def __init__(self, subject: str = None, class_level: str = None, chapter: str = None, study_material_id: str = None):
+        """
+        Initialize the revision pointers generator
+        
+        Args:
+            subject: Subject name (e.g., "History")
+            class_level: Class level/grade (e.g., "10")
+            chapter: Chapter/title name (e.g., "A Brief History of India")
+            study_material_id: Study material ID from PostgreSQL (used to filter embeddings)
+        """
+        self.subject = subject or "History"
+        self.class_level = class_level or "10"
+        self.chapter = chapter or "A Brief History of India"
+        self.study_material_id = study_material_id
+        
         self.embedding_model = HuggingFaceEmbeddings(
             model_name=MODEL_NAME,
             model_kwargs={"device": DEVICE}
@@ -59,19 +73,91 @@ class RevisionPointersGenerator:
         Returns:
             Combined chapter content as a string
         """
-        filter_meta = {
-            "$and": [
-                {"subject": {"$eq": self.SUBJECT}},
-                {"chapter": {"$eq": self.CHAPTER}},
-                {"class_level": {"$eq": self.CLASS_LEVEL}}
-            ]
-        }
+        # Build filter based on available parameters
+        filter_conditions = []
+        
+        # If study_material_id is provided, filter by it (primary filter)
+        # Try both study_material_id and document_id (for backward compatibility)
+        if self.study_material_id:
+            # First try filtering by study_material_id
+            filter_conditions.append({"study_material_id": {"$eq": str(self.study_material_id)}})
+            print(f"🔍 Filtering by study_material_id: {self.study_material_id}")
+        
+        # Add subject, chapter, and class_level filters if provided
+        if self.subject:
+            filter_conditions.append({"subject": {"$eq": self.subject}})
+        if self.chapter:
+            filter_conditions.append({"chapter": {"$eq": self.chapter}})
+        if self.class_level:
+            filter_conditions.append({"class_level": {"$eq": str(self.class_level)}})
+        
+        # Build filter metadata
+        if filter_conditions:
+            if len(filter_conditions) == 1:
+                filter_meta = filter_conditions[0]
+            else:
+                filter_meta = {"$and": filter_conditions}
+        else:
+            filter_meta = None
+        
         # Use a broad query to get comprehensive content
-        results = self.db.similarity_search(
-            "complete summary of " + self.CHAPTER + " all topics important points",
-            k=k,
-            filter=filter_meta
-        )
+        query_text = f"complete summary of {self.chapter or 'the document'} all topics important points"
+        
+        print(f"🔍 Querying ChromaDB with filter: {filter_meta}")
+        print(f"🔍 Query text: {query_text}")
+        print(f"🔍 Requesting {k} chunks")
+        
+        if filter_meta:
+            results = self.db.similarity_search(
+                query_text,
+                k=k,
+                filter=filter_meta
+            )
+        else:
+            results = self.db.similarity_search(query_text, k=k)
+        
+        if not results:
+            print(f"⚠️ Warning: No documents found with filter: {filter_meta}")
+            # Try fallback: filter by document_id if study_material_id didn't work
+            if self.study_material_id:
+                print(f"🔄 Trying fallback: filtering by document_id instead of study_material_id")
+                fallback_conditions = [{"document_id": {"$eq": str(self.study_material_id)}}]
+                if self.subject:
+                    fallback_conditions.append({"subject": {"$eq": self.subject}})
+                if self.chapter:
+                    fallback_conditions.append({"chapter": {"$eq": self.chapter}})
+                if self.class_level:
+                    fallback_conditions.append({"class_level": {"$eq": str(self.class_level)}})
+                
+                if len(fallback_conditions) == 1:
+                    fallback_filter = fallback_conditions[0]
+                else:
+                    fallback_filter = {"$and": fallback_conditions}
+                
+                print(f"🔍 Fallback filter: {fallback_filter}")
+                results = self.db.similarity_search(query_text, k=k, filter=fallback_filter)
+                if results:
+                    print(f"✅ Fallback successful: Found {len(results)} chunks using document_id")
+                else:
+                    print(f"❌ Fallback also returned 0 results")
+            
+            if not results:
+                return ""
+        
+        print(f"✅ Retrieved {len(results)} document chunks from ChromaDB")
+        # Print sample metadata to debug
+        if results:
+            sample_metadata = results[0].metadata
+            print(f"📋 Sample chunk metadata: {sample_metadata}")
+        
+        return "\n\n".join([doc.page_content for doc in results])
+        
+        print(f"✅ Retrieved {len(results)} document chunks from ChromaDB")
+        # Print sample metadata to debug
+        if results:
+            sample_metadata = results[0].metadata
+            print(f"📋 Sample chunk metadata: {sample_metadata}")
+        
         return "\n\n".join([doc.page_content for doc in results])
     
     def _generate_revision_pointers(self, content: str) -> List[str]:
@@ -126,9 +212,9 @@ Generate the revision pointers now:"""
         
         full_prompt = prompt_template.format(
             content=content,
-            subject=self.SUBJECT,
-            class_level=self.CLASS_LEVEL,
-            chapter=self.CHAPTER
+            subject=self.subject,
+            class_level=self.class_level,
+            chapter=self.chapter
         )
         
         response = self.llm.invoke(full_prompt)
@@ -201,10 +287,11 @@ Generate the revision pointers now:"""
         """
         content = self._get_chapter_content(k=50)
         if not content:
+            print(f"Warning: No content found for study_material_id: {self.study_material_id}")
             return {
-                "subject": self.SUBJECT,
-                "class_level": self.CLASS_LEVEL,
-                "chapter": self.CHAPTER,
+                "subject": self.subject,
+                "class_level": self.class_level,
+                "chapter": self.chapter,
                 "pointers": [],
                 "total_pointers": 0
             }
@@ -212,9 +299,9 @@ Generate the revision pointers now:"""
         pointers = self._generate_revision_pointers(content)
         
         return {
-            "subject": self.SUBJECT,
-            "class_level": self.CLASS_LEVEL,
-            "chapter": self.CHAPTER,
+            "subject": self.subject,
+            "class_level": self.class_level,
+            "chapter": self.chapter,
             "pointers": pointers,
             "total_pointers": len(pointers)
         }

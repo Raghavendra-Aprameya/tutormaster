@@ -20,7 +20,10 @@ load_dotenv()
 SUBJECT = "History"
 CLASS_LEVEL = "10"
 CHAPTER = "A Brief History of India"
-CHROMA_DIR = "../../chroma_store"
+# Use absolute path based on this file's location
+# This file is in AI/Langchains/, so chroma_store should be at AI/chroma_store
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CHROMA_DIR = os.path.join(BASE_DIR, "chroma_store")
 MODEL_NAME = "BAAI/bge-small-en"
 DEVICE = "cpu"
 COLLECTION_NAME = "chapter_embeddings"
